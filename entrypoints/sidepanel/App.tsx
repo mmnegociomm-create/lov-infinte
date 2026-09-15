@@ -8,7 +8,6 @@ const AI_MODEL = {
   modelID: 'muse-spark-1.3-contributor-free',
 };
 const AI_VARIANT = 'medium';
-const AI_PROMPT = 'Responda exatamente com a frase: Comunicação com IA funcionando.';
 const AI_TOOLS: Record<string, boolean> = {
   invalid: false,
   question: false,
@@ -30,7 +29,7 @@ type Status = 'checking' | 'connected' | 'disconnected';
 type SessionState = 'idle' | 'creating' | 'created' | 'error';
 type MessageState = 'idle' | 'sending' | 'sent' | 'error';
 type ListState = 'idle' | 'loading' | 'loaded' | 'error';
-type AiState = 'idle' | 'answering' | 'answered' | 'error';
+type ChatState = 'idle' | 'answering' | 'error';
 
 type ListedMessage = {
   role: string;
@@ -47,8 +46,8 @@ function App() {
   const [messageId, setMessageId] = useState('');
   const [listState, setListState] = useState<ListState>('idle');
   const [messages, setMessages] = useState<ListedMessage[]>([]);
-  const [aiState, setAiState] = useState<AiState>('idle');
-  const [aiReply, setAiReply] = useState('');
+  const [aiState, setAiState] = useState<ChatState>('idle');
+  const [chatText, setChatText] = useState('');
 
   const resetSessionData = useCallback(() => {
     setSessionState('idle');
@@ -59,7 +58,7 @@ function App() {
     setListState('idle');
     setMessages([]);
     setAiState('idle');
-    setAiReply('');
+    setChatText('');
   }, []);
 
   const checkHealth = useCallback(async () => {
@@ -97,7 +96,7 @@ function App() {
     setListState('idle');
     setMessages([]);
     setAiState('idle');
-    setAiReply('');
+    setChatText('');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     try {
@@ -226,12 +225,12 @@ function App() {
     checkHealth();
   }, [checkHealth]);
 
-  const testAi = useCallback(async () => {
-    if (sessionId.length === 0) {
+  const sendChat = useCallback(async () => {
+    const text = chatText.trim();
+    if (sessionId.length === 0 || text.length === 0) {
       return;
     }
     setAiState('answering');
-    setAiReply('');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 120000);
     try {
@@ -245,7 +244,7 @@ function App() {
             variant: AI_VARIANT,
             noReply: false,
             tools: AI_TOOLS,
-            parts: [{ type: 'text', text: AI_PROMPT }],
+            parts: [{ type: 'text', text }],
           }),
           signal: controller.signal,
         },
@@ -254,28 +253,16 @@ function App() {
         setAiState('error');
         return;
       }
-      const data = await res.json();
-      const texts: string[] = [];
-      if (data && Array.isArray(data.parts)) {
-        for (const part of data.parts) {
-          if (
-            part &&
-            typeof part === 'object' &&
-            part.type === 'text' &&
-            typeof part.text === 'string'
-          ) {
-            texts.push(part.text);
-          }
-        }
-      }
-      setAiReply(texts.join(''));
-      setAiState('answered');
+      await res.json();
+      setChatText('');
+      setAiState('idle');
+      await loadMessages();
     } catch {
       setAiState('error');
     } finally {
       clearTimeout(timer);
     }
-  }, [sessionId]);
+  }, [chatText, sessionId, loadMessages]);
 
   return (
     <div className="container">
@@ -343,19 +330,25 @@ function App() {
               {listState === 'error' && (
                 <p>Não foi possível carregar as mensagens.</p>
               )}
-              <h3>Teste de IA</h3>
-              {aiState === 'idle' || aiState === 'error' ? (
-                <button type="button" onClick={testAi}>
-                  Testar Muse Spark
-                </button>
-              ) : null}
+              <h3>Chat com IA</h3>
+              <label htmlFor="chat-message">Mensagem</label>
+              <input
+                id="chat-message"
+                type="text"
+                value={chatText}
+                onChange={(e) => setChatText(e.target.value)}
+                placeholder="Digite o que você quer perguntar..."
+              />
+              <button
+                type="button"
+                onClick={sendChat}
+                disabled={
+                  chatText.trim().length === 0 || aiState === 'answering'
+                }
+              >
+                Enviar
+              </button>
               {aiState === 'answering' && <p>Muse Spark está respondendo...</p>}
-              {aiState === 'answered' && (
-                <>
-                  <p>Resposta do Muse Spark</p>
-                  <p>{aiReply}</p>
-                </>
-              )}
               {aiState === 'error' && (
                 <p>Não foi possível obter resposta do Muse Spark.</p>
               )}
