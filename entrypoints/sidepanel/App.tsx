@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const HEALTH_URL = 'http://127.0.0.1:4096/global/health';
 const SESSION_URL = 'http://127.0.0.1:4096/session';
@@ -12,8 +12,8 @@ const AI_TOOLS: Record<string, boolean> = {
   invalid: false,
   question: false,
   bash: false,
-  read: false,
-  glob: false,
+  read: true,
+  glob: true,
   grep: false,
   edit: false,
   write: false,
@@ -24,6 +24,63 @@ const AI_TOOLS: Record<string, boolean> = {
   skill: false,
   apply_patch: false,
 };
+
+type SessionPermissionRule = {
+  permission: string;
+  pattern: string;
+  action: 'allow' | 'deny' | 'ask';
+};
+
+// Regras aplicadas NA SESSÃO (sem tocar a config global).
+// Ordem: regra ampla primeiro, denies específicos depois
+// (última regra coincidente vence).
+const SESSION_PERMISSION: SessionPermissionRule[] = [
+  { permission: 'external_directory', pattern: '*', action: 'deny' },
+  { permission: 'read', pattern: '*', action: 'allow' },
+  { permission: 'read', pattern: '.env', action: 'deny' },
+  { permission: 'read', pattern: '.env.*', action: 'deny' },
+  { permission: 'read', pattern: '**/.env', action: 'deny' },
+  { permission: 'read', pattern: '**/.env.*', action: 'deny' },
+  { permission: 'read', pattern: '*.pem', action: 'deny' },
+  { permission: 'read', pattern: '**/*.pem', action: 'deny' },
+  { permission: 'read', pattern: '*.key', action: 'deny' },
+  { permission: 'read', pattern: '**/*.key', action: 'deny' },
+  { permission: 'read', pattern: '*.p12', action: 'deny' },
+  { permission: 'read', pattern: '**/*.p12', action: 'deny' },
+  { permission: 'read', pattern: '*.pfx', action: 'deny' },
+  { permission: 'read', pattern: '**/*.pfx', action: 'deny' },
+  { permission: 'read', pattern: 'id_rsa', action: 'deny' },
+  { permission: 'read', pattern: '**/id_rsa', action: 'deny' },
+  { permission: 'read', pattern: 'id_ed25519', action: 'deny' },
+  { permission: 'read', pattern: '**/id_ed25519', action: 'deny' },
+  { permission: 'read', pattern: '**/.ssh/**', action: 'deny' },
+  { permission: 'read', pattern: '**/secrets/**', action: 'deny' },
+  { permission: 'read', pattern: '**/.git/**', action: 'deny' },
+  { permission: 'glob', pattern: '*', action: 'allow' },
+  { permission: 'glob', pattern: '.env', action: 'deny' },
+  { permission: 'glob', pattern: '.env.*', action: 'deny' },
+  { permission: 'glob', pattern: '**/.env', action: 'deny' },
+  { permission: 'glob', pattern: '**/.env.*', action: 'deny' },
+  { permission: 'glob', pattern: '*.pem', action: 'deny' },
+  { permission: 'glob', pattern: '**/*.pem', action: 'deny' },
+  { permission: 'glob', pattern: '*.key', action: 'deny' },
+  { permission: 'glob', pattern: '**/*.key', action: 'deny' },
+  { permission: 'glob', pattern: '*.p12', action: 'deny' },
+  { permission: 'glob', pattern: '**/*.p12', action: 'deny' },
+  { permission: 'glob', pattern: '*.pfx', action: 'deny' },
+  { permission: 'glob', pattern: '**/*.pfx', action: 'deny' },
+  { permission: 'glob', pattern: '**/.ssh/**', action: 'deny' },
+  { permission: 'glob', pattern: '**/secrets/**', action: 'deny' },
+  { permission: 'glob', pattern: '**/.git/**', action: 'deny' },
+  { permission: 'grep', pattern: '*', action: 'deny' },
+  { permission: 'edit', pattern: '*', action: 'deny' },
+  { permission: 'bash', pattern: '*', action: 'deny' },
+  { permission: 'task', pattern: '*', action: 'deny' },
+  { permission: 'webfetch', pattern: '*', action: 'deny' },
+  { permission: 'websearch', pattern: '*', action: 'deny' },
+  { permission: 'skill', pattern: '*', action: 'deny' },
+  { permission: 'question', pattern: '*', action: 'deny' },
+];
 
 type Status = 'checking' | 'connected' | 'disconnected';
 type SessionState = 'idle' | 'creating' | 'created' | 'error';
@@ -46,6 +103,7 @@ function App() {
   const [messageId, setMessageId] = useState('');
   const [listState, setListState] = useState<ListState>('idle');
   const [messages, setMessages] = useState<ListedMessage[]>([]);
+  const historyRef = useRef<HTMLDivElement>(null);
   const [aiState, setAiState] = useState<ChatState>('idle');
   const [chatText, setChatText] = useState('');
 
@@ -103,7 +161,10 @@ function App() {
       const res = await fetch(SESSION_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: 'Lovable Code Assistant - Teste' }),
+        body: JSON.stringify({
+          title: 'Lovable Code Assistant - Teste',
+          permission: SESSION_PERMISSION,
+        }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -225,6 +286,13 @@ function App() {
     checkHealth();
   }, [checkHealth]);
 
+  useEffect(() => {
+    const el = historyRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messages, listState]);
+
   const sendChat = useCallback(async () => {
     const text = chatText.trim();
     if (sessionId.length === 0 || text.length === 0) {
@@ -324,7 +392,9 @@ function App() {
               </section>
               <section className="card card-chat">
                 <span className="label">CHAT IA</span>
-                <div className="history">
+                <p className="mode-badge">MODO: ANÁLISE</p>
+                <p className="muted">Somente leitura</p>
+                <div className="history-scroll" ref={historyRef}>
                   {listState === 'idle' && (
                     <p className="muted">
                       O histórico aparecerá aqui após carregar as mensagens.
