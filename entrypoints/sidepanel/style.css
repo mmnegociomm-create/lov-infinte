@@ -448,6 +448,258 @@ body::before {
   border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
 
+/* ---------- Workspace ---------- */
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ws-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, var(--card-light), var(--card));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.brand-mark-sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+}
+
+.ws-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-mode {
+  margin: 2px 0 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  color: var(--neon);
+}
+
+.conn {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.conn-online {
+  color: var(--success);
+}
+
+.conn-offline {
+  color: var(--danger);
+}
+
+.icon-btn {
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--neon);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  transition: background 0.15s ease;
+}
+
+.icon-btn:hover {
+  background: rgba(37, 217, 255, 0.1);
+}
+
+.conversation {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.conversation::-webkit-scrollbar {
+  width: 6px;
+}
+
+.conversation::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+.conversation::-webkit-scrollbar-thumb {
+  background: rgba(37, 217, 255, 0.3);
+  border-radius: 6px;
+}
+
+.conversation p {
+  margin: 0;
+}
+
+.composer {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(37, 217, 255, 0.28);
+  background: linear-gradient(180deg, var(--card-light), var(--card));
+  box-shadow:
+    0 0 16px rgba(37, 217, 255, 0.08),
+    0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.composer-field {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  overflow-y: auto;
+  resize: none;
+  font-family: inherit;
+}
+
+.btn-send {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  color: #04121a;
+  background: linear-gradient(135deg, var(--neon), #7ce9ff);
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 14px var(--glow);
+}
+
+.btn-send:not(:disabled):hover {
+  box-shadow: 0 0 20px rgba(37, 217, 255, 0.35);
+}
+
+/* ---------- Settings ---------- */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.btn-back {
+  width: 36px;
+  padding: 8px 0;
+  font-size: 16px;
+}
+
+.settings-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+
+.settings-card {
+  gap: 0;
+  padding: 6px 14px 14px;
+}
+
+.set-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.set-group + .set-group {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.set-group p {
+  margin: 0;
+}
+
+.set-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.set-key {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.set-val {
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.set-note {
+  font-size: 12px;
+}
+
+.set-debug {
+  opacity: 0.92;
+}
+
+.set-debug .label {
+  color: var(--text-secondary);
+  border-color: rgba(255, 255, 255, 0.14);
+  background: transparent;
+}
+
+.btn-sm {
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+
+.settings-card .field {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.settings-card .status {
+  font-size: 13.5px;
+}
+
 /* ---------- Empty state ---------- */
 
 .empty-state {

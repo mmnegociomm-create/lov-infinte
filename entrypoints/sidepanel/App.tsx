@@ -86,7 +86,10 @@ type Status = 'checking' | 'connected' | 'disconnected';
 type SessionState = 'idle' | 'creating' | 'created' | 'error';
 type MessageState = 'idle' | 'sending' | 'sent' | 'error';
 type ListState = 'idle' | 'loading' | 'loaded' | 'error';
-type ChatState = 'idle' | 'answering' | 'error';
+type ChatState = 'idle' | 'preparing' | 'answering' | 'error';
+
+// Views internas do painel (extensível: futuramente 'license').
+type AppView = 'workspace' | 'settings';
 
 type ListedMessage = {
   role: string;
@@ -106,6 +109,7 @@ function App() {
   const historyRef = useRef<HTMLDivElement>(null);
   const [aiState, setAiState] = useState<ChatState>('idle');
   const [chatText, setChatText] = useState('');
+  const [activeView, setActiveView] = useState<AppView>('workspace');
 
   const resetSessionData = useCallback(() => {
     setSessionState('idle');
@@ -145,16 +149,9 @@ function App() {
     }
   }, [resetSessionData]);
 
-  const createSession = useCallback(async () => {
+  const createSession = useCallback(async (): Promise<string | null> => {
     setSessionState('creating');
     setSessionId('');
-    setMessageText('');
-    setMessageState('idle');
-    setMessageId('');
-    setListState('idle');
-    setMessages([]);
-    setAiState('idle');
-    setChatText('');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     try {
@@ -169,17 +166,19 @@ function App() {
       });
       if (!res.ok) {
         setSessionState('error');
-        return;
+        return null;
       }
       const data = await res.json();
       if (data && typeof data.id === 'string' && data.id.length > 0) {
         setSessionId(data.id);
         setSessionState('created');
-      } else {
-        setSessionState('error');
+        return data.id;
       }
+      setSessionState('error');
+      return null;
     } catch {
       setSessionState('error');
+      return null;
     } finally {
       clearTimeout(timer);
     }
@@ -295,15 +294,29 @@ function App() {
 
   const sendChat = useCallback(async () => {
     const text = chatText.trim();
-    if (sessionId.length === 0 || text.length === 0) {
+    if (
+      text.length === 0 ||
+      aiState === 'answering' ||
+      aiState === 'preparing'
+    ) {
       return;
+    }
+    let id = sessionId;
+    if (id.length === 0) {
+      setAiState('preparing');
+      const created = await createSession();
+      if (!created) {
+        setAiState('error');
+        return;
+      }
+      id = created;
     }
     setAiState('answering');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 120000);
     try {
       const res = await fetch(
-        `${SESSION_URL}/${encodeURIComponent(sessionId)}/message`,
+        `${SESSION_URL}/${encodeURIComponent(id)}/message`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -330,222 +343,266 @@ function App() {
     } finally {
       clearTimeout(timer);
     }
-  }, [chatText, sessionId, loadMessages]);
+  }, [chatText, sessionId, aiState, createSession, loadMessages]);
 
-  return (
-    <div className="container">
-      <header className="brand">
-        <span className="brand-mark" aria-hidden="true" />
-        <div className="brand-text">
-          <h1 className="brand-title">Lovable Code Assistant</h1>
-          <p className="brand-subtitle">AI DEVELOPMENT COPILOT</p>
-        </div>
-      </header>
-      {status === 'checking' && (
-        <section className="card">
-          <span className="label">OPEN CODE</span>
-          <p className="status status-checking">Verificando...</p>
-        </section>
-      )}
-      {status === 'connected' && (
-        <>
-          <section className="card card-status">
-            <span className="label">OPEN CODE</span>
-            <div className="status-row">
-              <p className="status status-online">🟢 Conectado</p>
-              <p className="version mono">v{version}</p>
-            </div>
+  if (activeView === 'settings') {
+    return (
+      <div className="container">
+        <div className="settings">
+          <header className="settings-header">
             <button
               type="button"
-              className="btn btn-ghost"
-              onClick={checkHealth}
+              className="btn btn-ghost btn-back"
+              onClick={() => setActiveView('workspace')}
+              aria-label="Voltar para o workspace"
             >
-              Verificar conexão
+              ←
             </button>
-          </section>
-          {sessionState === 'idle' && (
-            <section className="card">
-              <span className="label">SESSÃO</span>
+            <h2 className="settings-title">CONFIGURAÇÕES</h2>
+          </header>
+          <section className="card settings-card">
+            <div className="set-group">
+              <span className="label">CONEXÃO</span>
+              <div className="set-row">
+                <span className="set-key">Status</span>
+                {status === 'checking' && (
+                  <span className="status status-checking">Verificando...</span>
+                )}
+                {status === 'connected' && (
+                  <span className="status status-online">🟢 Conectado</span>
+                )}
+                {status === 'disconnected' && (
+                  <span className="status status-offline">🔴 Desconectado</span>
+                )}
+              </div>
+              <div className="set-row">
+                <span className="set-key">Versão</span>
+                <span className="mono set-val">{version}</span>
+              </div>
               <button
                 type="button"
-                className="btn btn-primary"
-                onClick={createSession}
+                className="btn btn-ghost btn-sm"
+                onClick={checkHealth}
               >
-                Iniciar sessão
+                Verificar conexão
               </button>
-            </section>
-          )}
-          {sessionState === 'creating' && (
-            <section className="card">
+            </div>
+            <div className="set-group">
+              <span className="label">MODELO E MODO</span>
+              <div className="set-row">
+                <span className="set-key">Modelo</span>
+                <span className="set-val">Muse Spark 1.3 Free</span>
+              </div>
+              <div className="set-row">
+                <span className="set-key">Provider</span>
+                <span className="set-val muted">OpenCode Zen</span>
+              </div>
+              <div className="set-row">
+                <span className="set-key">Modo</span>
+                <span className="set-val">Medium</span>
+              </div>
+              <div className="set-row">
+                <span className="set-key">Trabalho</span>
+                <span className="set-val">Análise · Somente leitura</span>
+              </div>
+              <p className="muted set-note">
+                Pode analisar os arquivos do projeto. Alterações estão
+                bloqueadas.
+              </p>
+            </div>
+            <div className="set-group">
               <span className="label">SESSÃO</span>
-              <p>Criando sessão...</p>
-            </section>
-          )}
-          {sessionState === 'created' && (
-            <>
-              <section className="card">
-                <span className="label">SESSÃO</span>
-                <p className="success">Sessão criada com sucesso.</p>
+              {sessionState === 'creating' && <p>Criando sessão...</p>}
+              {sessionId.length > 0 ? (
                 <p className="mono mono-truncate" title={sessionId}>
                   {sessionId}
                 </p>
-              </section>
-              <section className="card card-chat">
-                <span className="label">CHAT IA</span>
-                <p className="mode-badge">MODO: ANÁLISE</p>
-                <p className="muted">Somente leitura</p>
-                <div className="history-scroll" ref={historyRef}>
-                  {listState === 'idle' && (
-                    <p className="muted">
-                      O histórico aparecerá aqui após carregar as mensagens.
-                    </p>
-                  )}
-                  {listState === 'loading' && <p>Carregando mensagens...</p>}
-                  {listState === 'loaded' && (
-                    <>
-                      {messages.length === 0 ? (
-                        <p className="muted">Nenhuma mensagem nesta sessão.</p>
-                      ) : (
-                        <div className="messages">
-                          {messages.map((m, i) => (
-                            <div
-                              key={i}
-                              className={
-                                m.role === 'assistant'
-                                  ? 'msg msg-ai'
-                                  : 'msg msg-user'
-                              }
-                            >
-                              <span className="msg-author">
-                                {m.role === 'assistant' ? 'OpenCode' : 'Você'}
-                              </span>
-                              <span className="msg-text">{m.text}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {listState === 'error' && (
-                    <p className="error">
-                      Não foi possível carregar as mensagens.
-                    </p>
-                  )}
-                </div>
-                <div className="chat-input">
-                  <label className="field-label" htmlFor="chat-message">
-                    Mensagem
-                  </label>
-                  <input
-                    id="chat-message"
-                    className="field"
-                    type="text"
-                    value={chatText}
-                    onChange={(e) => setChatText(e.target.value)}
-                    placeholder="Digite o que você quer perguntar..."
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={sendChat}
-                    disabled={
-                      chatText.trim().length === 0 || aiState === 'answering'
-                    }
-                  >
-                    Enviar
-                  </button>
-                  {aiState === 'answering' && (
-                    <p className="thinking">Muse Spark está respondendo...</p>
-                  )}
-                  {aiState === 'error' && (
-                    <p className="error">
-                      Não foi possível obter resposta do Muse Spark.
-                    </p>
-                  )}
-                </div>
-              </section>
-              <section className="card card-debug">
-                <span className="label">FERRAMENTAS DE TESTE</span>
-                <label className="field-label" htmlFor="test-message">
-                  Mensagem de teste
-                </label>
-                <input
-                  id="test-message"
-                  className="field"
-                  type="text"
-                  value={messageText}
-                  onChange={(e) => setMessageText(e.target.value)}
-                  placeholder="Digite uma mensagem de teste"
-                />
-                {messageState === 'idle' || messageState === 'error' ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={sendMessage}
-                  >
-                    Enviar sem executar IA
-                  </button>
-                ) : null}
-                {messageState === 'sending' && <p>Enviando...</p>}
-                {messageState === 'sent' && (
-                  <>
-                    <p className="success">Mensagem registrada na sessão.</p>
-                    {messageId.length > 0 && (
-                      <p className="mono">ID: {messageId}</p>
-                    )}
-                  </>
-                )}
-                {messageState === 'error' && (
-                  <p className="error">Não foi possível registrar a mensagem.</p>
-                )}
+              ) : (
+                sessionState !== 'creating' && (
+                  <p className="muted">Nenhuma sessão iniciada.</p>
+                )
+              )}
+              {sessionState === 'error' && (
+                <p className="error">Não foi possível criar a sessão.</p>
+              )}
+            </div>
+            <div className="set-group set-debug">
+              <span className="label">FERRAMENTAS DE TESTE</span>
+              <label className="field-label" htmlFor="test-message">
+                Mensagem de teste
+              </label>
+              <input
+                id="test-message"
+                className="field"
+                type="text"
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                placeholder="Digite uma mensagem de teste"
+              />
+              {messageState === 'idle' || messageState === 'error' ? (
                 <button
                   type="button"
-                  className="btn btn-secondary"
-                  onClick={loadMessages}
+                  className="btn btn-secondary btn-sm"
+                  onClick={sendMessage}
                 >
-                  Carregar mensagens
+                  Enviar sem executar IA
                 </button>
-              </section>
-            </>
-          )}
-          {sessionState === 'error' && (
-            <section className="card">
-              <span className="label">SESSÃO</span>
-              <p className="error">Não foi possível criar a sessão.</p>
+              ) : null}
+              {messageState === 'sending' && <p>Enviando...</p>}
+              {messageState === 'sent' && (
+                <>
+                  <p className="success">Mensagem registrada na sessão.</p>
+                  {messageId.length > 0 && (
+                    <p className="mono">ID: {messageId}</p>
+                  )}
+                </>
+              )}
+              {messageState === 'error' && (
+                <p className="error">Não foi possível registrar a mensagem.</p>
+              )}
               <button
                 type="button"
-                className="btn btn-primary"
-                onClick={createSession}
+                className="btn btn-secondary btn-sm"
+                onClick={loadMessages}
               >
-                Iniciar sessão
+                Carregar mensagens
               </button>
-            </section>
-          )}
-          {sessionId.length === 0 && (
-            <div className="empty-state">
-              <span className="empty-orb" aria-hidden="true" />
-              <p className="empty-title">PRONTO PARA COMEÇAR</p>
-              <p className="muted">
-                Inicie uma sessão para conversar com o assistente.
-              </p>
             </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container">
+      <div className="workspace">
+        <header className="ws-header">
+          <span className="brand-mark brand-mark-sm" aria-hidden="true" />
+          <div className="ws-titles">
+            <h1 className="ws-title">LOVABLE CODE ASSISTANT</h1>
+            <p className="ws-mode">ANÁLISE • SOMENTE LEITURA</p>
+          </div>
+          {status === 'connected' ? (
+            <span className="conn conn-online" title="Conectado ao OpenCode">
+              ● Online
+            </span>
+          ) : (
+            <span className="conn conn-offline" title="Desconectado do OpenCode">
+              ● Offline
+            </span>
           )}
-        </>
-      )}
-      {status === 'disconnected' && (
-        <section className="card">
-          <span className="label">OPEN CODE</span>
-          <p className="status status-offline">🔴 Desconectado</p>
-          <p className="muted">Inicie o OpenCode local para continuar.</p>
           <button
             type="button"
-            className="btn btn-ghost"
-            onClick={checkHealth}
+            className="icon-btn"
+            onClick={() => setActiveView('settings')}
+            aria-label="Abrir configurações"
+            title="Configurações"
           >
-            Tentar novamente
+            ⚙
           </button>
-        </section>
-      )}
+        </header>
+        {status !== 'connected' ? (
+          <div className="conversation">
+            <section className="card">
+              <span className="label">OPEN CODE</span>
+              {status === 'checking' ? (
+                <p className="status status-checking">Verificando...</p>
+              ) : (
+                <>
+                  <p className="status status-offline">🔴 Desconectado</p>
+                  <p className="muted">
+                    Inicie o OpenCode local para continuar.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={checkHealth}
+                  >
+                    Tentar novamente
+                  </button>
+                </>
+              )}
+            </section>
+          </div>
+        ) : (
+          <>
+            <div className="conversation" ref={historyRef}>
+              {messages.length === 0 &&
+              listState !== 'loading' &&
+              aiState !== 'preparing' &&
+              aiState !== 'answering' ? (
+                <div className="empty-state">
+                  <span className="empty-orb" aria-hidden="true" />
+                  <p className="empty-title">PRONTO PARA COMEÇAR</p>
+                  <p className="muted">
+                    Descreva o que você quer criar, corrigir ou analisar.
+                  </p>
+                  <p className="mode-badge">MODO ANÁLISE • SOMENTE LEITURA</p>
+                </div>
+              ) : (
+                <div className="messages">
+                  {messages.map((m, i) => (
+                    <div
+                      key={i}
+                      className={
+                        m.role === 'assistant' ? 'msg msg-ai' : 'msg msg-user'
+                      }
+                    >
+                      <span className="msg-author">
+                        {m.role === 'assistant' ? 'OpenCode' : 'Você'}
+                      </span>
+                      <span className="msg-text">{m.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {listState === 'loading' && <p>Carregando mensagens...</p>}
+              {listState === 'error' && (
+                <p className="error">
+                  Não foi possível carregar as mensagens.
+                </p>
+              )}
+              {aiState === 'preparing' && <p>Preparando sessão...</p>}
+              {aiState === 'answering' && (
+                <p className="thinking">Muse Spark está respondendo...</p>
+              )}
+              {aiState === 'error' && (
+                <p className="error">
+                  Não foi possível obter resposta do Muse Spark.
+                </p>
+              )}
+            </div>
+            <div className="composer">
+              <textarea
+                id="chat-message"
+                className="field composer-field"
+                rows={2}
+                value={chatText}
+                onChange={(e) => setChatText(e.target.value)}
+                placeholder="Descreva o que você quer fazer..."
+                disabled={
+                  aiState === 'answering' || aiState === 'preparing'
+                }
+              />
+              <button
+                type="button"
+                className="btn btn-send"
+                onClick={sendChat}
+                disabled={
+                  chatText.trim().length === 0 ||
+                  aiState === 'answering' ||
+                  aiState === 'preparing'
+                }
+                aria-label="Enviar mensagem"
+                title="Enviar"
+              >
+                ➤
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
