@@ -1031,29 +1031,45 @@ async function handleTaskApprove(req, res) {
 }
 
 // Restaura UM path ao estado anterior (tracked: `git restore`; untracked:
-// remove o arquivo exato). Retorna null em sucesso ou código de erro.
-// Nunca reset --hard, nunca clean genérico.
+// arquivo/symlink = remove o path exato; diretório = remove recursivamente
+// SOMENTE aquele diretório). Retorna null em sucesso ou código de erro.
+// Nunca reset --hard, nunca clean genérico, nunca fora do workspace.
 async function restoreSinglePath(ws, relPath, status) {
   const resolved = path.resolve(ws, relPath);
   if (!isPathInsideWorkspace(ws, resolved)) {
     return 'INVALID_PATH';
   }
   if (status === 'untracked') {
+    // Porcelain lista diretórios com "/" final; normaliza para operar.
+    const target = resolved.replace(/[\\/]+$/, '');
+    if (!isPathInsideWorkspace(ws, target) || target === ws) {
+      return 'INVALID_PATH';
+    }
     let st = null;
     try {
-      st = await fs.stat(resolved);
+      // lstat: symlink nunca é seguido (remove o link, não o alvo).
+      st = await fs.lstat(target);
     } catch {
       st = null;
     }
-    if (st !== null) {
-      if (!st.isFile()) {
-        return 'NOT_A_FILE';
-      }
+    if (st === null) {
+      return null; // já ausente: ok
+    }
+    if (!st.isSymbolicLink() && st.isDirectory()) {
       try {
-        await fs.unlink(resolved);
+        await fs.rm(target, { recursive: true, force: false });
       } catch {
-        return 'UNLINK_FAILED';
+        return 'RMDIR_FAILED';
       }
+      return null;
+    }
+    if (!st.isFile() && !st.isSymbolicLink()) {
+      return 'NOT_A_FILE';
+    }
+    try {
+      await fs.unlink(target);
+    } catch {
+      return 'UNLINK_FAILED';
     }
     return null;
   }
@@ -1068,8 +1084,9 @@ async function restoreSinglePath(ws, relPath, status) {
 }
 
 // POST /task/reject — desfaz SOMENTE as mudanças da tarefa pendente.
-// Tracked: `git restore` por arquivo. Untracked: remove só o arquivo exato.
-// Nunca reset --hard, nunca clean genérico. Fonte da verdade: pendingReview.
+// Tracked: `git restore` por arquivo. Untracked: arquivo/symlink exato ou
+// diretório exato (recursivo). Nunca reset --hard, nunca clean genérico.
+// Fonte da verdade: pendingReview.
 async function handleTaskReject(req, res) {
   try {
     if (pendingReview === null) {
