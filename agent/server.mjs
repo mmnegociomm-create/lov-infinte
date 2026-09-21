@@ -737,6 +737,66 @@ function parseListedMessages(data) {
   return parsed;
 }
 
+// Coleta o que o workspace contém de diferente: diff por arquivo, paths
+// relativos. Retorna null se o git falhar. Nunca rejeita por si só.
+async function collectTaskChanges(ws) {
+  const after = await runGit(['status', '--porcelain'], ws);
+  if (after.missing || !after.ok) {
+    return null;
+  }
+  const parsed = parseGitChanges(after.output);
+  let totalChars = 0;
+  const filesWithDiff = [];
+  for (const f of parsed) {
+    const absPath = path.resolve(ws, f.path);
+    if (!isPathInsideWorkspace(ws, absPath)) {
+      continue;
+    }
+    let entry = { path: f.path, status: f.status, diff: '', truncated: true };
+    if (totalChars < MAX_DIFF_TOTAL_CHARS) {
+      const built = await getFileDiff(ws, f.path, absPath, f.status);
+      entry = { path: f.path, status: f.status, ...built };
+      totalChars += entry.diff.length;
+    }
+    filesWithDiff.push(entry);
+  }
+  return { hasChanges: filesWithDiff.length > 0, files: filesWithDiff };
+}
+
+// Recuperação parcial: a tarefa partiu de workspace limpo; se a resposta
+// final falhou mas o git ficou dirty, retorna estado revisável (409
+// TASK_PARTIAL com sessionId + changes) em vez de erro genérico.
+// Registra pendingReview para Rejeitar funcionar. Nunca aprova/commita.
+// Retorna true se respondeu. Sem alterações => false (erro normal segue).
+async function tryTaskPartialRecovery(res, ws, sessionId) {
+  try {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return false;
+    }
+    const changes = await collectTaskChanges(ws);
+    if (changes === null || !changes.hasChanges) {
+      return false;
+    }
+    pendingReview = {
+      workspace: ws,
+      sessionId,
+      files: changes.files.map(({ path: p, status: s }) => ({
+        path: p,
+        status: s,
+      })),
+    };
+    sendJson(res, 409, {
+      success: false,
+      error: 'TASK_PARTIAL',
+      sessionId,
+      changes,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // POST /task — recebe intenção de alto nível e executa o fluxo real no OpenCode
 // DENTRO do workspace autorizado (POST /session?directory=<workspace>).
 // Exige workspace configurado e válido. Aceita { instruction, sessionId?, model?, variant? }.
@@ -902,6 +962,9 @@ async function handleTask(req, res) {
       TASK_MESSAGE_TIMEOUT_MS,
     );
     if (sent.networkError) {
+      if (await tryTaskPartialRecovery(res, ws, sessionId)) {
+        return;
+      }
       sendJson(res, 503, { success: false, error: 'OPENCODE_UNAVAILABLE' });
       return;
     }
@@ -911,12 +974,18 @@ async function handleTask(req, res) {
         sendJson(res, 429, { success: false, error: 'OPENCODE_MODEL_LIMIT' });
         return;
       }
+      if (await tryTaskPartialRecovery(res, ws, sessionId)) {
+        return;
+      }
       sendJson(res, 502, { success: false, error: 'OPENCODE_ERROR' });
       return;
     }
     try {
       JSON.parse(sent.text);
     } catch {
+      if (await tryTaskPartialRecovery(res, ws, sessionId)) {
+        return;
+      }
       sendJson(res, 502, { success: false, error: 'OPENCODE_ERROR' });
       return;
     }
@@ -927,6 +996,9 @@ async function handleTask(req, res) {
       TASK_MESSAGES_TIMEOUT_MS,
     );
     if (listed.networkError) {
+      if (await tryTaskPartialRecovery(res, ws, sessionId)) {
+        return;
+      }
       sendJson(res, 503, { success: false, error: 'OPENCODE_UNAVAILABLE' });
       return;
     }
@@ -939,37 +1011,24 @@ async function handleTask(req, res) {
       }
     }
     if (messages === null) {
+      if (await tryTaskPartialRecovery(res, ws, sessionId)) {
+        return;
+      }
       sendJson(res, 502, { success: false, error: 'OPENCODE_ERROR' });
       return;
     }
     // Detecta o que a tarefa alterou: diff por arquivo, paths relativos.
     let changes = { hasChanges: false, files: [] };
     if (repoAvailable) {
-      const after = await runGit(['status', '--porcelain'], ws);
-      if (!after.missing && after.ok) {
-        const parsed = parseGitChanges(after.output);
-        let totalChars = 0;
-        const filesWithDiff = [];
-        for (const f of parsed) {
-          const absPath = path.resolve(ws, f.path);
-          if (!isPathInsideWorkspace(ws, absPath)) {
-            continue;
-          }
-          let entry = { path: f.path, status: f.status, diff: '', truncated: true };
-          if (totalChars < MAX_DIFF_TOTAL_CHARS) {
-            const built = await getFileDiff(ws, f.path, absPath, f.status);
-            entry = { path: f.path, status: f.status, ...built };
-            totalChars += entry.diff.length;
-          }
-          filesWithDiff.push(entry);
-        }
-        changes = { hasChanges: filesWithDiff.length > 0, files: filesWithDiff };
+      const collected = await collectTaskChanges(ws);
+      if (collected !== null) {
+        changes = collected;
         if (changes.hasChanges) {
           // fonte da verdade do reject: somente path+status (sem diffs)
           pendingReview = {
             workspace: ws,
             sessionId,
-            files: filesWithDiff.map(({ path: p, status: s }) => ({
+            files: changes.files.map(({ path: p, status: s }) => ({
               path: p,
               status: s,
             })),
@@ -1223,13 +1282,19 @@ async function handleGitPush(req, res) {
       sendJson(res, 409, { success: false, error: 'NOTHING_TO_PUSH' });
       return;
     }
-    if (githubToken === null) {
+    // Push usa o mesmo token ativo validado (identidade única).
+    const auth = await getActiveGithubAuth();
+    if (!auth.ok) {
+      if (auth.networkError) {
+        sendJson(res, 502, { success: false, error: 'GITHUB_API_ERROR' });
+        return;
+      }
       sendJson(res, 401, { success: false, error: 'GITHUB_AUTH_REQUIRED' });
       return;
     }
-    const token = githubToken;
+    const token = auth.token;
     // Origin precisa estar na lista autorizada da conta (sem URL do cliente).
-    const listed = await listAuthorizedRepos();
+    const listed = await listAuthorizedRepos(token);
     if (listed.invalid) {
       sendJson(res, 401, { success: false, error: 'GITHUB_AUTH_REQUIRED' });
       return;
@@ -2309,7 +2374,9 @@ async function handleClearWorkspace(req, res) {
 
 // GitHub OAuth Device Flow (sem client_secret, sem PAT).
 // Client ID público configurado; access token SOMENTE em agent/github.json
-// (gitignored). Token nunca vai para a extensão, logs ou erros.
+// (gitignored), junto do login validado via GET /user. Token e login nunca
+// vão para a extensão, logs ou erros. Vale UMA única identidade ativa:
+// status, repos, clone e push usam sempre o mesmo token validado.
 const GITHUB_CLIENT_ID = 'Ov23li9egOb0e1UH3zxQ';
 const GITHUB_SCOPE = 'repo';
 const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code';
@@ -2319,6 +2386,7 @@ const GITHUB_TIMEOUT_MS = 15000;
 const GITHUB_TOKEN_PATH = fileURLToPath(new URL('github.json', import.meta.url));
 let deviceFlow = null; // { device_code, expires_at } — user_code/uri vão à extensão
 let githubToken = null; // access token em memória (espelho do arquivo)
+let githubLogin = null; // login validado do token ativo (espelho do arquivo)
 
 function githubRequest(method, url, body, token) {
   return new Promise((resolve) => {
@@ -2379,30 +2447,83 @@ function githubRequest(method, url, body, token) {
 }
 
 async function loadGithubToken() {
-  try {
-    const raw = await fs.readFile(GITHUB_TOKEN_PATH, 'utf8');
-    const data = JSON.parse(raw);
-    if (data && typeof data.access_token === 'string' && data.access_token.length > 0) {
-      githubToken = data.access_token;
-      return;
-    }
-  } catch {
-    // sem token: desconectado
-  }
   githubToken = null;
+  githubLogin = null;
+  let data = null;
+  try {
+    data = JSON.parse(await fs.readFile(GITHUB_TOKEN_PATH, 'utf8'));
+  } catch {
+    // sem arquivo válido: desconectado
+    return;
+  }
+  if (
+    !data ||
+    typeof data.access_token !== 'string' ||
+    data.access_token.length === 0
+  ) {
+    return;
+  }
+  const savedLogin = typeof data.login === 'string' ? data.login : '';
+  const u = await fetchGithubUser(data.access_token);
+  if (!u.ok) {
+    if (u.invalid) {
+      // token revogado/expirado: não reutilizar em nenhuma conta
+      try {
+        await fs.unlink(GITHUB_TOKEN_PATH);
+      } catch {
+        // arquivo já ausente: ok
+      }
+    }
+    // falha de rede: mantém desconectado até a próxima validação em uso
+    return;
+  }
+  if (
+    savedLogin.length > 0 &&
+    savedLogin.toLowerCase() !== u.user.login.toLowerCase()
+  ) {
+    // arquivo trocado por outra conta: sessão inválida, exige reconexão
+    try {
+      await fs.unlink(GITHUB_TOKEN_PATH);
+    } catch {
+      // arquivo já ausente: ok
+    }
+    return;
+  }
+  githubToken = data.access_token;
+  githubLogin = u.user.login;
+  if (savedLogin.length === 0) {
+    // backfill do login em arquivos antigos (só token)
+    try {
+      await fs.writeFile(
+        GITHUB_TOKEN_PATH,
+        JSON.stringify({
+          access_token: githubToken,
+          scope: GITHUB_SCOPE,
+          login: githubLogin,
+        }),
+        'utf8',
+      );
+    } catch {
+      // melhor esforço: identidade em memória já é a validada
+    }
+  }
 }
 
-async function saveGithubToken(token) {
-  githubToken = token;
+async function saveGithubToken(token, login) {
+  // Arquivo primeiro: se a persistência falhar, a memória nunca carrega
+  // um token sem par em disco (fail-closed, sem deriva entre fontes).
   await fs.writeFile(
     GITHUB_TOKEN_PATH,
-    JSON.stringify({ access_token: token, scope: GITHUB_SCOPE }),
+    JSON.stringify({ access_token: token, scope: GITHUB_SCOPE, login }),
     'utf8',
   );
+  githubToken = token;
+  githubLogin = login;
 }
 
 async function clearGithubToken() {
   githubToken = null;
+  githubLogin = null;
   deviceFlow = null;
   try {
     await fs.unlink(GITHUB_TOKEN_PATH);
@@ -2486,8 +2607,15 @@ async function handleGithubPoll(req, res) {
     }
     const d = r.json ?? {};
     if (typeof d.access_token === 'string' && d.access_token.length > 0) {
+      // Conta nova substitui completamente a anterior: valida a identidade
+      // do token recebido ANTES de persistir; token inválido nunca é salvo.
+      const u = await fetchGithubUser(d.access_token);
+      if (!u.ok) {
+        sendJson(res, 502, { success: false, error: 'GITHUB_FLOW_ERROR' });
+        return;
+      }
       try {
-        await saveGithubToken(d.access_token);
+        await saveGithubToken(d.access_token, u.user.login);
       } catch {
         sendJson(res, 500, { success: false, error: 'INTERNAL_ERROR' });
         return;
@@ -2554,20 +2682,46 @@ async function fetchGithubUser(token) {
   };
 }
 
+// Identidade única ativa: o token em memória só vale se o GET /user
+// confirmar o mesmo login persistido. Qualquer divergência invalida a
+// sessão (limpa memória + arquivo) e exige reconexão. Nunca rejeita.
+// Retorna { ok:true, token, login, user } ou { ok:false, ... }.
+async function getActiveGithubAuth() {
+  if (githubToken === null) {
+    return { ok: false, error: 'GITHUB_NOT_CONNECTED', networkError: false };
+  }
+  const u = await fetchGithubUser(githubToken);
+  if (!u.ok) {
+    if (u.invalid) {
+      await clearGithubToken();
+      return { ok: false, error: 'GITHUB_TOKEN_INVALID', networkError: false };
+    }
+    return { ok: false, error: 'GITHUB_UNAVAILABLE', networkError: true };
+  }
+  if (
+    githubLogin !== null &&
+    githubLogin.toLowerCase() !== u.user.login.toLowerCase()
+  ) {
+    // login salvo != login do token atual: sessão inválida
+    await clearGithubToken();
+    return { ok: false, error: 'GITHUB_SESSION_INVALID', networkError: false };
+  }
+  githubLogin = u.user.login;
+  return { ok: true, token: githubToken, login: u.user.login, user: u.user };
+}
+
 // GET /github/status — conectado + usuário, sem token.
+// Reflete exclusivamente o usuário do token atualmente válido.
 async function handleGithubStatus(req, res) {
   try {
     if (githubToken === null) {
       sendJson(res, 409, { success: false, error: 'GITHUB_NOT_CONNECTED' });
       return;
     }
-    const u = await fetchGithubUser(githubToken);
-    if (u.ok) {
-      sendJson(res, 200, { connected: true, user: u.user });
+    const auth = await getActiveGithubAuth();
+    if (auth.ok) {
+      sendJson(res, 200, { connected: true, user: auth.user });
       return;
-    }
-    if (u.invalid) {
-      await clearGithubToken();
     }
     sendJson(res, 200, { connected: false });
   } catch {
@@ -2580,17 +2734,27 @@ async function handleGithubStatus(req, res) {
 }
 
 // GET /github/repos — somente campos necessários, sem conteúdo de arquivos.
+// Usa sempre o token ativo validado (mesma identidade do status).
 async function handleGithubRepos(req, res) {
   try {
-    if (githubToken === null) {
-      sendJson(res, 409, { success: false, error: 'GITHUB_NOT_CONNECTED' });
+    const auth = await getActiveGithubAuth();
+    if (!auth.ok) {
+      if (auth.error === 'GITHUB_NOT_CONNECTED') {
+        sendJson(res, 409, { success: false, error: 'GITHUB_NOT_CONNECTED' });
+        return;
+      }
+      if (auth.networkError) {
+        sendJson(res, 502, { success: false, error: 'GITHUB_UNAVAILABLE' });
+        return;
+      }
+      sendJson(res, 401, { success: false, error: 'GITHUB_TOKEN_INVALID' });
       return;
     }
     const r = await githubRequest(
       'GET',
       `${GITHUB_API_URL}/user/repos?per_page=100&sort=updated`,
       undefined,
-      githubToken,
+      auth.token,
     );
     if (r.networkError) {
       sendJson(res, 502, { success: false, error: 'GITHUB_UNAVAILABLE' });
@@ -2654,17 +2818,19 @@ function normalizeGitRemoteUrl(url) {
 }
 
 // Lista fresca de repos autorizados (fonte da verdade do clone).
+// Recebe o token ativo já validado (nunca lê fonte antiga/diferente).
 // Retorna null em falha de rede/API; array vazio se token inválido+limpo? Não:
 // 401 limpa o token e retorna { invalid: true }.
-async function listAuthorizedRepos() {
-  if (githubToken === null) {
+async function listAuthorizedRepos(activeToken) {
+  const token = activeToken ?? githubToken;
+  if (token === null) {
     return { repos: null, invalid: false };
   }
   const r = await githubRequest(
     'GET',
     `${GITHUB_API_URL}/user/repos?per_page=100&sort=updated`,
     undefined,
-    githubToken,
+    token,
   );
   if (r.networkError) {
     return { repos: null, invalid: false };
@@ -2727,12 +2893,22 @@ async function handleGithubClone(req, res) {
       sendJson(res, 400, { success: false, error: 'INVALID_REPO' });
       return;
     }
-    if (githubToken === null) {
-      sendJson(res, 409, { success: false, error: 'GITHUB_NOT_CONNECTED' });
+    // Clone usa o mesmo token ativo validado (identidade única).
+    const auth = await getActiveGithubAuth();
+    if (!auth.ok) {
+      if (auth.error === 'GITHUB_NOT_CONNECTED') {
+        sendJson(res, 409, { success: false, error: 'GITHUB_NOT_CONNECTED' });
+        return;
+      }
+      if (auth.networkError) {
+        sendJson(res, 502, { success: false, error: 'GITHUB_API_ERROR' });
+        return;
+      }
+      sendJson(res, 401, { success: false, error: 'GITHUB_TOKEN_INVALID' });
       return;
     }
-    const token = githubToken;
-    const listed = await listAuthorizedRepos();
+    const token = auth.token;
+    const listed = await listAuthorizedRepos(token);
     if (listed.invalid) {
       sendJson(res, 401, { success: false, error: 'GITHUB_TOKEN_INVALID' });
       return;
