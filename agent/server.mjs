@@ -3000,7 +3000,16 @@ async function handleGithubClone(req, res) {
       cloneArgs.push('-c', `credential.helper=store --file=${credentialFile}`);
     }
     cloneArgs.push(repo.clone_url, dest);
-    const cloned = await runGit(cloneArgs, root, GIT_CLONE_TIMEOUT_MS);
+    // Isolamento OAuth (igual ao push): sem configs global/system o GCM do
+    // sistema pode responder com credencial obsoleta; o GitHub retorna 404
+    // para repo privado sem acesso e o git aborta antes de tentar o helper
+    // temporário. Somente o helper temporário responde.
+    const cloned = await runGit(
+      cloneArgs,
+      root,
+      GIT_CLONE_TIMEOUT_MS,
+      OAUTH_ISOLATION_ENV,
+    );
     if (cloned.missing || !cloned.ok) {
       if (!cloned.missing && classifyPushError(cloned.errorOutput) === 'GIT_AUTH_REQUIRED') {
         sendJson(res, 401, { success: false, error: 'GIT_AUTH_REQUIRED' });
